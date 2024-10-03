@@ -38,6 +38,9 @@ static int debug_mode = 0;
 
 static struct option longopts[] = {
 	{"debug",	no_argument,		&debug_mode, 1},
+	{"chroot", 	required_argument,	NULL, 'c'},
+	{"user",	required_argument, 	NULL, 'u'},
+	{"group", 	required_argument, 	NULL, 'g'},
 	{"port",	required_argument, 	NULL, 'p'},
 	{"help",	no_argument,		NULL, 'h'},
 	{0, 0, 0, 0}
@@ -97,6 +100,7 @@ static void server_main(int server_fd, char *docroot);
 static void detach_children(void);
 static void noop_handler(int sig);
 static void become_daemon(void);
+static void setup_environment(char *root, char *user, char *group);
 
 /* Functions */
 
@@ -104,11 +108,23 @@ int main(int argc, char *argv[]) {
 	int server_fd;
 	char *port = DEFAULT_PORT;
 	char *docroot;
+	int do_chroot = 0;
+	char *user = NULL;
+	char *group = NULL;
 	int opt;
 
 	while((opt = getopt_long(argc, argv, "", longopts, NULL)) != -1) {
 		switch(opt) {
 			case 0:
+				break;
+			case 'c':
+				do_chroot = 1;
+				break;
+			case 'u':
+				user = optarg;
+				break;
+			case 'g':
+				group = optarg;
 				break;
 			case 'p':
 				port = optarg;
@@ -126,7 +142,12 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, USAGE, argv[0]);
 		exit(1);
 	}
+	
 	docroot = argv[optind];
+	if (do_chroot) {
+		setup_environment(docroot, user, group);
+		docroot = "";
+	}
 
 	install_signal_handlers();
 	server_fd = listen_socket(port);
@@ -553,4 +574,43 @@ static void become_daemon(void) {
 	if (n < 0) log_exit("fork(2) failed: %s", strerror(errno));
 	if (n != 0) _exit(0);
 	if (setsid() < 0) log_exit("setsid(2) failed: %s", strerror(errno));
+}
+
+static void setup_environment(char *root, char *user, char *group) {
+	struct passwd *pw;
+	struct group *gr;
+
+	if (!user || !group) {
+		fprintf(stderr, "use both of --user and --group\n");
+		exit(1);
+	}
+
+	gr = getgrnam(group);
+	if (!gr) {
+		fprintf(stderr, "no such group: %s\n", group);
+		exit(1);
+	}
+
+	if (setgid(gr->gr_gid) < 0) {
+		perror("setgid(2)");
+		exit(1);
+	}
+
+	if (initgroups(user, gr->gr_gid) < 0) {
+		perror("initgroups(2)");
+		exit(1);
+	}
+
+	pw = getpwnam(user);
+	if (!pw) {
+		fprintf(stderr, "no such user: %s\n", user);
+		exit(1);
+	}
+	
+	chroot(root);
+	
+	if (setuid(pw->pw_uid) < 0) {
+		perror("setuid(2)");
+		exit(1);
+	}
 }

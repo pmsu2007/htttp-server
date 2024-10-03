@@ -29,9 +29,19 @@
 #define LINE_BUF_SIZE 4096
 #define TIME_BUF_SIZE 64
 #define MAX_REQUEST_BODY_LENGTH (1024 * 1024)
-#define USAGE "Usage: %s [--port=n] [--chroot --user-u --group=g] <docroot>\n"
 #define MAX_BACKLOG 5
 #define DEFAULT_PORT "80"
+#define USAGE "Usage: %s [--port=n] [--chroot --user-u --group=g] [--debug] <docroot>\n"
+
+/* Static  Variables */
+static int debug_mode = 0;
+
+static struct option longopts[] = {
+	{"debug",	no_argument,		&debug_mode, 1},
+	{"port",	required_argument, 	NULL, 'p'},
+	{"help",	no_argument,		NULL, 'h'},
+	{0, 0, 0, 0}
+};
 
 /* Structs */
 
@@ -84,21 +94,49 @@ static void* xmalloc(size_t sz);
 static void log_exit(const char *fmt, ...);
 static int listen_socket(char *port);
 static void server_main(int server_fd, char *docroot);
+static void detach_children(void);
+static void noop_handler(int sig);
+static void become_daemon(void);
 
 /* Functions */
 
 int main(int argc, char *argv[]) {
 	int server_fd;
+	char *port = DEFAULT_PORT;
+	char *docroot;
+	int opt;
 
-	if (argc != 2) {
-		fprintf(stderr, "Usage: %s <docroot>\n", argv[0]);
-		exit(1);
+	while((opt = getopt_long(argc, argv, "", longopts, NULL)) != -1) {
+		switch(opt) {
+			case 0:
+				break;
+			case 'p':
+				port = optarg;
+				break;
+			case 'h':
+				fprintf(stdout, USAGE, argv[0]);
+				exit(0);
+			case '?':
+				fprintf(stderr, USAGE, argv[0]);
+				exit(1);
+		}
 	}
 
-	install_signal_handlers();
-	server_fd = listen_socket(DEFAULT_PORT);
-	server_main(server_fd, argv[1]);
+	if (optind != argc - 1) {
+		fprintf(stderr, USAGE, argv[0]);
+		exit(1);
+	}
+	docroot = argv[optind];
 
+	install_signal_handlers();
+	server_fd = listen_socket(port);
+	
+	if (!debug_mode) {
+		openlog(SERVER_NAME, LOG_PID|LOG_NDELAY, LOG_DAEMON);
+		become_daemon();
+	}
+
+	server_main(server_fd, argv[1]);
 	exit(0);
 }
 
@@ -414,8 +452,12 @@ static void log_exit(const char *fmt, ...) {
 	va_list ap;
 
 	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
-	fputc('\n', stderr);
+	if (debug_mode) {
+		vfprintf(stderr, fmt, ap);
+		fputc('\n', stderr);
+	} else {
+		vsyslog(LOG_ERR, fmt, ap);
+	}
 	va_end(ap);
 
 	exit(1);
@@ -479,4 +521,36 @@ static void server_main(int server_fd, char *docroot) {
 		}
 		close(sock);
 	}
+}
+
+static void detach_children(void) {
+	struct sigaction act;
+
+	act.sa_handler = noop_handler;
+	sigemptyset(&act.sa_mask);
+	act.sa_flags = SA_RESTART | SA_NOCLDWAIT;
+	if (sigaction(SIGCHLD, &act, NULL) < 0) {
+		log_exit("sigaction() failed: %s", strerror(errno));
+	}
+}
+
+static void noop_handler(int sig) {
+	;
+}
+
+static void become_daemon(void) {
+	int n;
+
+	if (chdir("/") < 0)
+		log_exit("chdir(2) failed: %s", strerror(errno));
+
+	freopen("/dev/null", "r", stdin);
+	freopen("/dev/null", "w", stdout);
+	freopen("/dev/null", "w", stderr);
+
+	n = fork();
+
+	if (n < 0) log_exit("fork(2) failed: %s", strerror(errno));
+	if (n != 0) _exit(0);
+	if (setsid() < 0) log_exit("setsid(2) failed: %s", strerror(errno));
 }

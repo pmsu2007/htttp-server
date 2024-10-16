@@ -12,7 +12,7 @@ int debug_mode = 0;
 
 static struct option longopts[] = {
 	{"debug",	no_argument,		&debug_mode, 1},
-	{"chroot",	required_argument,	NULL, 'c'},
+	{"chroot",	no_argument,		NULL, 'c'},
 	{"user",	required_argument, 	NULL, 'u'},
 	{"group",	required_argument, 	NULL, 'g'},
 	{"port",	required_argument, 	NULL, 'p'},
